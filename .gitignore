@@ -1,3 +1,11 @@
-*.json
-/*.py
-/node_modules
+cookies.json
+*.cookies.json
+
+dist/
+build/
+*.egg-info/
+
+__pycache__/
+*.py[cod]
+
+node_modules/
