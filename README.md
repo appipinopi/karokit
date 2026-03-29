@@ -78,3 +78,5 @@ client.set_paid_plan(
 
 - This is an unofficial client and can break when Karotter changes internals.
 - Use responsibly and follow the service terms/laws.
+
+## Thank
