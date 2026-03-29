@@ -16,8 +16,7 @@ Repository: `appipinopi/karokit`
 ## Install
 
 ```bash
-pip install -r requirements.txt
-pip install -e .
+pip install karokit
 ```
 
 ## Quick Example
