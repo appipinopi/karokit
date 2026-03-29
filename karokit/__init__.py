@@ -7,7 +7,7 @@ https://karotter.com/
 Python library for interacting with Karotter without official API keys.
 """
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"
 
 import asyncio
 import os
