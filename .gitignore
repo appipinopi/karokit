@@ -9,3 +9,5 @@ __pycache__/
 *.py[cod]
 
 node_modules/
+.playwright-cli/
+.karotter_api_ref/

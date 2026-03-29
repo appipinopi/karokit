@@ -24,6 +24,7 @@ from .group import Group, GroupMessage
 from .list import List
 from .message import Message
 from .notification import Notification
+from .streaming import RealtimeStreamingClient, StreamingClient
 from .trend import Trend
 from .karot import CommunityNote, Karot, Poll, ScheduledKarot
 from .user import User
@@ -42,6 +43,8 @@ __all__ = [
     "Message",
     "Group",
     "GroupMessage",
+    "StreamingClient",
+    "RealtimeStreamingClient",
     "BookmarkFolder",
     "Community",
     "CommunityCreator",

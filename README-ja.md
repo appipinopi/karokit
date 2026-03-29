@@ -1,7 +1,6 @@
 ﻿# karokit (日本語)
 
-`karokit` は **Karotter（`karotter.com`）向けの非公式 scraper/API ラッパー**です。
-
+`karokit` は **Karotter（`karotter.com`）向けの非公式 scraper/API ラッパー**です。  
 リポジトリ: `appipinopi/karokit`
 
 ## 特徴
@@ -13,7 +12,34 @@
 - トレンド取得
 - 有料プラン化に備えたヘッダ注入 (`set_paid_plan`)
 
-## インストール
+## インストール（通常利用）
+
+PyPI からインストール:
+
+```bash
+pip install karokit
+```
+
+`pip` が古い場合:
+
+```bash
+python -m pip install --upgrade pip
+pip install karokit
+```
+
+インストール確認:
+
+```bash
+python -c "import karokit; print(karokit.__version__)"
+```
+
+更新:
+
+```bash
+pip install -U karokit
+```
+
+## 開発版インストール（このリポジトリから）
 
 ```bash
 pip install -r requirements.txt
@@ -26,26 +52,17 @@ pip install -e .
 import asyncio
 from karokit import Client
 
-USERNAME = "example_user"
-EMAIL = "email@example.com"
-PASSWORD = "password0000"
 
-client = Client("ja-JP")
-
-async def main():
-    await client.login(
-        auth_info_1=USERNAME,
-        auth_info_2=EMAIL,
-        password=PASSWORD,
-        cookies_file="cookies.json",
-    )
+async def main() -> None:
+    client = Client(locale="ja-JP")
+    await client.login(identifier="YOUR_ID_OR_EMAIL", password="YOUR_PASSWORD")
 
     await client.create_karot("karokit から投稿")
-
     karots = await client.search_karot("python", "Latest")
     print(len(karots))
 
     await client.close()
+
 
 asyncio.run(main())
 ```
@@ -60,7 +77,7 @@ asyncio.run(main())
 
 ## 有料化への備え
 
-Karotter が有料プラン制になった場合は次のように設定できます。
+Karotter が有料プラン制になった場合:
 
 ```python
 client.set_paid_plan(
@@ -70,8 +87,8 @@ client.set_paid_plan(
 )
 ```
 
-- `402` は `PaidPlanRequiredError` として判定
-- `client.payment_retry_hook` により、課金トークン更新後の再試行が可能
+- `402` は `PaidPlanRequiredError`
+- `client.payment_retry_hook` で課金トークン更新後の再試行が可能
 
 ## 注意
 

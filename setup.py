@@ -15,6 +15,7 @@ setup(
         "httpx[socks]",
         "beautifulsoup4",
         "lxml",
+        "python-socketio[asyncio_client]",
     ],
     python_requires=">=3.10",
     description="Karotter scraper/API wrapper for python with no official API key required.",

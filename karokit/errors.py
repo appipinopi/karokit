@@ -39,8 +39,18 @@ class RateLimitError(KarotterAPIError):
     """Raised when request is rate limited."""
 
 
+class RealtimeNotAvailableError(RuntimeError):
+    """Raised when realtime dependencies are not installed."""
+
+
+class RealtimeConnectionError(RuntimeError):
+    """Raised when Socket.IO connection cannot be established."""
+
+
 __all__ = [
     "KarotterAPIError",
     "PaidPlanRequiredError",
     "RateLimitError",
+    "RealtimeNotAvailableError",
+    "RealtimeConnectionError",
 ]

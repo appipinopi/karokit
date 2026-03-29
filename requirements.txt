@@ -1,3 +1,4 @@
 httpx[socks]
 beautifulsoup4
 lxml
+python-socketio[asyncio_client]

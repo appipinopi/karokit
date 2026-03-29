@@ -1,19 +1,26 @@
 ﻿# karokit
 
-A simple **Karotter (`karotter.com`) scraper/API wrapper** for Python.
+`karokit` is an unofficial Python client/scraper for `karotter.com`, with twikit-style compatibility methods.
 
 Repository: `appipinopi/karokit`
 
 ## Features
 
-- No official API key required
-- Login/session support (cookies + token refresh)
-- Create/search/get karots
-- DM support
-- Trends support
-- Paid-plan ready header injection (`set_paid_plan`)
+- Login/session support (access token, refresh token, CSRF, cookie export/import)
+- Read APIs: timeline, post detail, search, trends, users, notifications, DMs
+- Write APIs: create post, like, rekarot, bookmark, react, vote, follow, block, mute
+- Extended action APIs: quotes/likes list, analytics, grouped notifications, follow requests
+- Realtime support via Socket.IO (`notification`, `dd.newMessage`)
+- Twikit-style aliases (`create_tweet`, `favorite_tweet`, `retweet`, `search_tweet`)
+- Paid-plan readiness (`set_paid_plan`, `payment_retry_hook`)
 
 ## Install
+
+```bash
+pip install karokit
+```
+
+Development install from source:
 
 ```bash
 pip install -r requirements.txt
@@ -26,42 +33,54 @@ pip install -e .
 import asyncio
 from karokit import Client
 
-USERNAME = "example_user"
-EMAIL = "email@example.com"
-PASSWORD = "password0000"
 
-client = Client("ja-JP")
+async def main() -> None:
+    client = Client(locale="ja-JP")
+    await client.login(identifier="YOUR_ID_OR_EMAIL", password="YOUR_PASSWORD")
 
-async def main():
-    await client.login(
-        auth_info_1=USERNAME,
-        auth_info_2=EMAIL,
-        password=PASSWORD,
-        cookies_file="cookies.json",
-    )
+    await client.create_karot("Hello from karokit")
+    await client.like_post(12345)
+    await client.follow_user(67890)
 
-    await client.create_karot("Example karot")
-
-    karots = await client.search_karot("python", "Latest")
-    for item in karots:
-        print(item)
-
+    data = await client.get_timeline(page=1, mode="following")
+    print(data)
     await client.close()
+
 
 asyncio.run(main())
 ```
 
-## Main Methods
+## Realtime Example (Socket.IO)
 
-- `create_karot`
-- `search_karot`
-- `get_user_karots`
-- `send_dm`
-- `get_trends`
+```python
+import asyncio
+from karokit import Client, StreamingClient
+
+
+async def main() -> None:
+    client = Client()
+    await client.login(identifier="YOUR_ID_OR_EMAIL", password="YOUR_PASSWORD")
+
+    stream = StreamingClient(client)
+    async for notif in stream.realtime_notifications():
+        print("notification:", notif)
+
+
+asyncio.run(main())
+```
+
+## Key Methods
+
+- Post: `create_post`, `update_post`, `delete_post`, `record_post_views`
+- Engagement: `like_post`, `rekarot_post`, `bookmark_post`, `react_to_post`, `vote_post_poll`
+- Follow: `follow_user`, `unfollow_user`, `remove_follower`, `accept_follow_request`
+- Notifications: `get_notifications`, `get_grouped_post_notifications`, `get_unread_notification_count`
+- DM: `get_dm_groups`, `get_dm_messages`, `send_dm_message`, `send_dm`
+- Realtime: `StreamingClient.realtime_notifications`, `StreamingClient.realtime_dm_messages`
 
 ## Paid Plan Readiness
 
-If Karotter introduces paid plans, configure plan headers like this:
+If Karotter introduces paid plans, configure extra entitlement headers:
 
 ```python
 client.set_paid_plan(
@@ -72,11 +91,10 @@ client.set_paid_plan(
 ```
 
 - `402` raises `PaidPlanRequiredError`
-- `client.payment_retry_hook` can retry after refreshing paid entitlements
+- `client.payment_retry_hook` can retry after entitlements are refreshed
 
-## Notes
+## Safety Notes
 
-- This is an unofficial client and can break when Karotter changes internals.
-- Use responsibly and follow the service terms/laws.
-
-## Thank
+- This project does not implement illegal bypass/fraud behavior.
+- Use rate limits, normal browser-identical headers, and valid authentication only.
+- Follow Karotter terms and applicable laws.

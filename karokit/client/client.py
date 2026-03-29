@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import mimetypes
 import platform
+import time
 import uuid
 from contextlib import ExitStack
 from datetime import datetime, timezone
@@ -34,6 +36,10 @@ class Client:
         paid_plan: str = "free",
         entitlement_token: str | None = None,
         paid_headers: dict[str, str] | None = None,
+        user_agent: str | None = None,
+        browser_headers: dict[str, str] | None = None,
+        auto_wait_on_rate_limit: bool = True,
+        max_rate_limit_wait: float = 60.0,
         verify: bool = True,
     ) -> None:
         self.locale = locale
@@ -50,13 +56,19 @@ class Client:
         self.entitlement_token = entitlement_token
         self.paid_headers = paid_headers or {}
         self.payment_retry_hook: Callable[[], Awaitable[bool]] | None = None
+        self.user_agent = user_agent or self._default_user_agent()
+        self.origin = "https://karotter.com"
+        self.referer = f"{self.origin}/"
+        self.browser_headers = browser_headers or {}
+        self.auto_wait_on_rate_limit = auto_wait_on_rate_limit
+        self.max_rate_limit_wait = max_rate_limit_wait
 
         self._client = httpx.AsyncClient(
             base_url=self.base_url,
             timeout=timeout,
             follow_redirects=True,
             verify=verify,
-            headers={"Accept-Language": locale},
+            headers=self._default_http_headers(),
         )
 
     async def __aenter__(self) -> "Client":
@@ -74,6 +86,25 @@ class Client:
         if not url.endswith("/api"):
             url = f"{url}/api"
         return url
+
+    @staticmethod
+    def _default_user_agent() -> str:
+        return (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/123.0.0.0 Safari/537.36"
+        )
+
+    def _default_http_headers(self) -> dict[str, str]:
+        headers = {
+            "Accept-Language": self.locale,
+            "Accept": "application/json, text/plain, */*",
+            "Origin": self.origin,
+            "Referer": self.referer,
+            "User-Agent": self.user_agent,
+        }
+        headers.update(self.browser_headers)
+        return headers
 
     @staticmethod
     def _to_bool_str(value: bool) -> str:
@@ -110,6 +141,60 @@ class Client:
             headers["Authorization"] = f"Bearer {self.access_token}"
         return headers
 
+    @staticmethod
+    def _calculate_retry_seconds(response: httpx.Response) -> float | None:
+        for key in ("retry-after", "ratelimit-reset", "x-ratelimit-reset"):
+            raw_value = response.headers.get(key)
+            if raw_value is None:
+                continue
+            try:
+                value = float(raw_value)
+            except ValueError:
+                continue
+            if key in {"ratelimit-reset", "x-ratelimit-reset"} and value > time.time() + 1:
+                value = value - time.time()
+            return max(value, 1.0)
+        return None
+
+    def set_browser_identity(
+        self,
+        *,
+        user_agent: str | None = None,
+        origin: str | None = None,
+        referer: str | None = None,
+        extra_headers: dict[str, str] | None = None,
+    ) -> None:
+        """
+        Configure browser-like request headers for stable API interoperability.
+        """
+        if user_agent:
+            self.user_agent = user_agent
+        if origin:
+            self.origin = origin.rstrip("/")
+        if referer:
+            self.referer = referer
+        elif origin:
+            self.referer = f"{self.origin}/"
+        if extra_headers:
+            self.browser_headers.update({str(k): str(v) for k, v in extra_headers.items()})
+        self._client.headers.update(self._default_http_headers())
+
+    def _cookie_header(self) -> str:
+        return "; ".join(f"{name}={value}" for name, value in self._client.cookies.items())
+
+    def build_realtime_headers(self) -> dict[str, str]:
+        """
+        Build headers suitable for Socket.IO realtime connection.
+        """
+        headers = {
+            **self._default_http_headers(),
+            **self._auth_headers(),
+        }
+        cookie_header = self._cookie_header()
+        if cookie_header:
+            headers["Cookie"] = cookie_header
+        return headers
+
     async def _request(
         self,
         method: str,
@@ -134,6 +219,14 @@ class Client:
         if response.status_code == 402 and retry_on_402 and self.payment_retry_hook:
             recovered = await self.payment_retry_hook()
             if recovered:
+                merged_headers = {**self._auth_headers(), **headers}
+                response = await self._client.request(method, path, headers=merged_headers, **kwargs)
+                self._capture_csrf_token(response)
+
+        if response.status_code == 429 and self.auto_wait_on_rate_limit:
+            retry_after = self._calculate_retry_seconds(response)
+            if retry_after and retry_after <= self.max_rate_limit_wait:
+                await asyncio.sleep(retry_after)
                 merged_headers = {**self._auth_headers(), **headers}
                 response = await self._client.request(method, path, headers=merged_headers, **kwargs)
                 self._capture_csrf_token(response)
@@ -374,6 +467,12 @@ class Client:
             "paid_plan": self.paid_plan,
             "entitlement_token": self.entitlement_token,
             "paid_headers": self.paid_headers,
+            "user_agent": self.user_agent,
+            "origin": self.origin,
+            "referer": self.referer,
+            "browser_headers": self.browser_headers,
+            "auto_wait_on_rate_limit": self.auto_wait_on_rate_limit,
+            "max_rate_limit_wait": self.max_rate_limit_wait,
             "cookies": dict(self._client.cookies),
         }
 
@@ -386,12 +485,21 @@ class Client:
         self.csrf_token = session.get("csrf_token")
         self.paid_plan = session.get("paid_plan", self.paid_plan)
         self.entitlement_token = session.get("entitlement_token", self.entitlement_token)
+        self.user_agent = session.get("user_agent", self.user_agent)
+        self.origin = session.get("origin", self.origin)
+        self.referer = session.get("referer", self.referer)
+        self.auto_wait_on_rate_limit = bool(session.get("auto_wait_on_rate_limit", self.auto_wait_on_rate_limit))
+        self.max_rate_limit_wait = float(session.get("max_rate_limit_wait", self.max_rate_limit_wait))
         paid_headers = session.get("paid_headers")
         if isinstance(paid_headers, dict):
             self.paid_headers = {str(k): str(v) for k, v in paid_headers.items()}
+        browser_headers = session.get("browser_headers")
+        if isinstance(browser_headers, dict):
+            self.browser_headers = {str(k): str(v) for k, v in browser_headers.items()}
         cookies = session.get("cookies")
         if isinstance(cookies, dict):
             self._client.cookies.update(cookies)
+        self._client.headers.update(self._default_http_headers())
 
     def save_session(self, path: PathLike) -> None:
         Path(path).write_text(
@@ -439,6 +547,36 @@ class Client:
             f"/posts/{post_id}/replies",
             params={"page": page, "limit": limit},
         )
+
+    async def get_post_likes(self, post_id: int | str, *, page: int = 1, limit: int = 30) -> Any:
+        return await self._request_json(
+            "GET",
+            f"/posts/{post_id}/likes",
+            params={"page": page, "limit": limit},
+        )
+
+    async def get_post_quotes(self, post_id: int | str, *, page: int = 1, limit: int = 20) -> Any:
+        return await self._request_json(
+            "GET",
+            f"/posts/{post_id}/quotes",
+            params={"page": page, "limit": limit},
+        )
+
+    async def get_post_rekarots(self, post_id: int | str, *, page: int = 1, limit: int = 30) -> Any:
+        return await self._request_json(
+            "GET",
+            f"/posts/{post_id}/rekarots",
+            params={"page": page, "limit": limit},
+        )
+
+    async def get_post_conversation(self, post_id: int | str) -> Any:
+        return await self._request_json("GET", f"/posts/{post_id}/conversation")
+
+    async def leave_post_conversation(self, post_id: int | str) -> Any:
+        return await self._request_json("POST", f"/posts/{post_id}/conversation/leave")
+
+    async def get_post_analytics(self, post_id: int | str) -> Any:
+        return await self._request_json("GET", f"/posts/{post_id}/analytics")
 
     async def delete_post(self, post_id: int | str) -> Any:
         return await self._request_json("DELETE", f"/posts/{post_id}")
@@ -559,6 +697,40 @@ class Client:
             raise FileNotFoundError(path)
         return str(path)
 
+    async def record_post_views(self, post_ids: list[int | str]) -> Any:
+        if not post_ids:
+            return {"recorded": 0}
+        normalized_ids: list[int | str] = []
+        for value in post_ids:
+            try:
+                normalized_ids.append(int(str(value)))
+            except ValueError:
+                normalized_ids.append(str(value))
+        return await self._request_json("POST", "/posts/batch-views", json={"postIds": normalized_ids})
+
+    async def get_my_bookmarks(
+        self,
+        *,
+        page: int | None = 1,
+        limit: int = 20,
+        cursor: str | None = None,
+    ) -> Any:
+        params: dict[str, Any] = {"limit": limit}
+        if cursor is not None:
+            params["cursor"] = cursor
+        elif page is not None:
+            params["page"] = page
+        return await self._request_json("GET", "/posts/me/bookmarks", params=params)
+
+    async def get_bookmarks(
+        self,
+        *,
+        page: int | None = 1,
+        limit: int = 20,
+        cursor: str | None = None,
+    ) -> Any:
+        return await self.get_my_bookmarks(page=page, limit=limit, cursor=cursor)
+
     async def like_post(self, post_id: int | str) -> Any:
         return await self._request_json("POST", f"/posts/{post_id}/like")
 
@@ -585,6 +757,24 @@ class Client:
 
     async def vote_post_poll(self, post_id: int | str, option_id: int | str) -> Any:
         return await self._request_json("POST", f"/posts/{post_id}/poll/vote", json={"optionId": option_id})
+
+    async def favorite_tweet(self, tweet_id: int | str) -> Any:
+        return await self.like_post(tweet_id)
+
+    async def unfavorite_tweet(self, tweet_id: int | str) -> Any:
+        return await self.unlike_post(tweet_id)
+
+    async def retweet(self, tweet_id: int | str) -> Any:
+        return await self.rekarot_post(tweet_id)
+
+    async def delete_retweet(self, tweet_id: int | str) -> Any:
+        return await self.unrekarot_post(tweet_id)
+
+    async def bookmark_tweet(self, tweet_id: int | str) -> Any:
+        return await self.bookmark_post(tweet_id)
+
+    async def delete_bookmark(self, tweet_id: int | str) -> Any:
+        return await self.unbookmark_post(tweet_id)
 
     async def search_users(self, query: str, *, limit: int = 12, page: int = 1) -> Any:
         return await self._request_json(
@@ -680,6 +870,36 @@ class Client:
             params={"page": page, "limit": limit},
         )
 
+    async def get_followers(
+        self,
+        user_id: int | str,
+        *,
+        limit: int = 100,
+        page: int | None = None,
+        cursor: str | None = None,
+    ) -> Any:
+        params: dict[str, Any] = {"limit": limit}
+        if cursor is not None:
+            params["cursor"] = cursor
+        elif page is not None:
+            params["page"] = page
+        return await self._request_json("GET", f"/users/{user_id}/followers", params=params)
+
+    async def get_following(
+        self,
+        user_id: int | str,
+        *,
+        limit: int = 100,
+        page: int | None = None,
+        cursor: str | None = None,
+    ) -> Any:
+        params: dict[str, Any] = {"limit": limit}
+        if cursor is not None:
+            params["cursor"] = cursor
+        elif page is not None:
+            params["page"] = page
+        return await self._request_json("GET", f"/users/{user_id}/following", params=params)
+
     async def get_user_tweets(
         self,
         user_id: int | str,
@@ -731,17 +951,41 @@ class Client:
     async def unfollow_user(self, user_id: int | str) -> Any:
         return await self._request_json("DELETE", f"/follow/{user_id}")
 
+    async def follow(self, user_id: int | str) -> Any:
+        return await self.follow_user(user_id)
+
+    async def unfollow(self, user_id: int | str) -> Any:
+        return await self.unfollow_user(user_id)
+
+    async def remove_follower(self, user_id: int | str) -> Any:
+        return await self._request_json("DELETE", f"/follow/follower/{user_id}")
+
+    async def get_follow_requests(self) -> Any:
+        return await self._request_json("GET", "/follow/requests/pending")
+
+    async def accept_follow_request(self, request_id: int | str) -> Any:
+        return await self._request_json("POST", f"/follow/requests/{request_id}/accept")
+
+    async def reject_follow_request(self, request_id: int | str) -> Any:
+        return await self._request_json("POST", f"/follow/requests/{request_id}/reject")
+
     async def block_user(self, user_id: int | str) -> Any:
         return await self._request_json("POST", f"/follow/block/{user_id}")
 
     async def unblock_user(self, user_id: int | str) -> Any:
         return await self._request_json("DELETE", f"/follow/block/{user_id}")
 
+    async def get_blocked_users(self) -> Any:
+        return await self._request_json("GET", "/follow/block")
+
     async def mute_user(self, user_id: int | str) -> Any:
         return await self._request_json("POST", f"/follow/mute/{user_id}")
 
     async def unmute_user(self, user_id: int | str) -> Any:
         return await self._request_json("DELETE", f"/follow/mute/{user_id}")
+
+    async def get_muted_users(self) -> Any:
+        return await self._request_json("GET", "/follow/mute")
 
     async def get_notifications(self, *, page: int = 1, limit: int = 15) -> Any:
         return await self._request_json(
@@ -750,8 +994,35 @@ class Client:
             params={"page": page, "limit": limit},
         )
 
+    async def get_unread_notification_count(self) -> Any:
+        return await self._request_json("GET", "/notifications/unread/count")
+
+    async def get_grouped_post_notifications(self, *, limit: int = 15) -> Any:
+        return await self._request_json(
+            "GET",
+            "/notifications/grouped-posts",
+            params={"limit": limit},
+        )
+
     async def mark_notifications_read_all(self) -> Any:
         return await self._request_json("PATCH", "/notifications/read-all")
+
+    async def delete_notification(self, notification_id: int | str) -> Any:
+        return await self._request_json("DELETE", f"/notifications/{notification_id}")
+
+    async def register_push_token(self, token: str, *, device_id: str | None = None) -> Any:
+        return await self._request_json(
+            "POST",
+            "/notifications/push/register",
+            json={"token": token, "deviceId": device_id or self.device_id},
+        )
+
+    async def unregister_push_token(self, token: str) -> Any:
+        return await self._request_json(
+            "POST",
+            "/notifications/push/unregister",
+            json={"token": token},
+        )
 
     async def get_dm_groups(self, *, page: int = 1, limit: int = 30) -> Any:
         return await self._request_json("GET", "/dm/groups", params={"page": page, "limit": limit})
